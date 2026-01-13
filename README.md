@@ -80,7 +80,7 @@
 ### 一键安装服务端
 
 ```bash
-wget -O vless-server.sh https://raw.githubusercontent.com/Chil30/vless-all-in-one/main/vless-server.sh && chmod +x vless-server.sh && bash vless-server.sh
+bash <(wget -qO- https://raw.githubusercontent.com/Chil30/vless-all-in-one/main/vless-server.sh)
 ```
 
 ### 服务端安装

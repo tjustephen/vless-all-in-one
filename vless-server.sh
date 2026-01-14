@@ -1,6 +1,6 @@
 #!/bin/bash
 #═══════════════════════════════════════════════════════════════════════════════
-#  多协议代理一键部署脚本 v3.2.0 [服务端]
+#  多协议代理一键部署脚本 v3.2.1 [服务端]
 #  
 #  架构升级:
 #    • Xray 核心: 处理 TCP/TLS 协议 (VLESS/VMess/Trojan/SOCKS/SS2022)
@@ -17,9 +17,11 @@
 #  项目地址: https://github.com/Chil30/vless-all-in-one
 #═══════════════════════════════════════════════════════════════════════════════
 
-readonly VERSION="3.2.0"
+readonly VERSION="3.2.1"
 readonly AUTHOR="Chil30"
 readonly REPO_URL="https://github.com/Chil30/vless-all-in-one"
+readonly SCRIPT_REPO="Chil30/vless-all-in-one"
+readonly SCRIPT_RAW_URL="https://raw.githubusercontent.com/Chil30/vless-all-in-one/main/vless-server.sh"
 readonly CFG="/etc/vless-reality"
 readonly ACME_DEFAULT_EMAIL="acme@vaio.com"
 
@@ -3560,6 +3562,7 @@ fix_selinux_context() {
 readonly GITHUB_API_PER_PAGE=10
 readonly VERSION_CACHE_DIR="/tmp/vless-version-cache"
 readonly VERSION_CACHE_TTL=3600  # 缓存1小时
+readonly SCRIPT_VERSION_CACHE_FILE="$VERSION_CACHE_DIR/.script_version"
 readonly SNELL_RELEASE_NOTES_URL="https://kb.nssurge.com/surge-knowledge-base/release-notes/snell.md"
 readonly SNELL_RELEASE_NOTES_ZH_URL="https://kb.nssurge.com/surge-knowledge-base/zh/release-notes/snell.md"
 readonly SNELL_DEFAULT_VERSION="5.0.1"
@@ -3597,6 +3600,133 @@ _is_cache_fresh() {
     local current_time=$(date +%s)
     local age=$((current_time - cache_time))
     [[ $age -lt $VERSION_CACHE_TTL ]]
+}
+
+# 下载脚本到临时文件（回显临时文件路径）
+_fetch_script_tmp() {
+    local connect_timeout="${1:-10}"
+    local max_time="${2:-}"
+    local tmp_file
+    tmp_file=$(mktemp 2>/dev/null) || return 1
+    if [[ -n "$max_time" ]]; then
+        if ! curl -sL --connect-timeout "$connect_timeout" --max-time "$max_time" -o "$tmp_file" "$SCRIPT_RAW_URL"; then
+            rm -f "$tmp_file"
+            return 1
+        fi
+    else
+        if ! curl -sL --connect-timeout "$connect_timeout" -o "$tmp_file" "$SCRIPT_RAW_URL"; then
+            rm -f "$tmp_file"
+            return 1
+        fi
+    fi
+    echo "$tmp_file"
+}
+
+# 提取脚本版本号
+_extract_script_version() {
+    local file="$1"
+    [[ -f "$file" ]] || return 1
+    grep -m1 '^readonly VERSION=' "$file" 2>/dev/null | cut -d'"' -f2
+}
+
+# 下载脚本到指定路径
+_download_script_to() {
+    local target="$1"
+    local tmp_file
+    tmp_file=$(_fetch_script_tmp 10) || return 1
+    if mv "$tmp_file" "$target" 2>/dev/null; then
+        return 0
+    fi
+    if cp -f "$tmp_file" "$target" 2>/dev/null; then
+        rm -f "$tmp_file"
+        return 0
+    fi
+    rm -f "$tmp_file"
+    return 1
+}
+
+# 获取最新标签版本号（无缓存）
+_get_latest_tag_version() {
+    local repo="$1"
+    local result version
+    result=$(curl -sL --connect-timeout 5 --max-time 10 "https://api.github.com/repos/$repo/tags?per_page=1" 2>/dev/null)
+    [[ -z "$result" ]] && return 1
+    version=$(echo "$result" | jq -r '.[0].name // empty' 2>/dev/null | sed 's/^v//')
+    [[ -z "$version" ]] && return 1
+    echo "$version"
+}
+
+# 获取脚本最新版本号（优先 release，失败则 tag，带缓存）
+_get_latest_script_version() {
+    local use_cache="${1:-true}"
+    local force="${2:-false}"
+    local version=""
+
+    _init_version_cache
+    if [[ "$force" != "true" ]] && _is_cache_fresh "$SCRIPT_VERSION_CACHE_FILE"; then
+        cat "$SCRIPT_VERSION_CACHE_FILE" 2>/dev/null
+        return 0
+    fi
+
+    if [[ "$force" != "true" && "$use_cache" == "true" ]]; then
+        local cached_version
+        cached_version=$(cat "$SCRIPT_VERSION_CACHE_FILE" 2>/dev/null)
+        if [[ -n "$cached_version" ]]; then
+            echo "$cached_version"
+            return 0
+        fi
+    fi
+
+    version=$(_get_latest_version "$SCRIPT_REPO" "false" "true" 2>/dev/null)
+    if [[ -z "$version" ]]; then
+        version=$(_get_latest_tag_version "$SCRIPT_REPO")
+    fi
+    [[ -z "$version" ]] && return 1
+
+    echo "$version" > "$SCRIPT_VERSION_CACHE_FILE" 2>/dev/null || true
+    echo "$version"
+}
+
+# 语义化版本比较（v1 > v2 返回 0）
+_version_gt() {
+    local v1="$1" v2="$2"
+    [[ "$v1" == "$v2" ]] && return 1
+    local IFS=.
+    local i v1_arr=($v1) v2_arr=($v2)
+    for ((i=0; i<${#v1_arr[@]} || i<${#v2_arr[@]}; i++)); do
+        local n1=${v1_arr[i]:-0} n2=${v2_arr[i]:-0}
+        ((n1 > n2)) && return 0
+        ((n1 < n2)) && return 1
+    done
+    return 1
+}
+
+# 后台异步检查脚本版本（用于主菜单提示）
+_check_script_update_async() {
+    _init_version_cache
+    if _is_cache_fresh "$SCRIPT_VERSION_CACHE_FILE"; then
+        return 0
+    fi
+    (
+        _get_latest_script_version "false" "true" >/dev/null 2>&1 || exit 0
+    ) &
+}
+
+_has_script_update() {
+    [[ -f "$SCRIPT_VERSION_CACHE_FILE" ]] || return 1
+    local remote_ver
+    remote_ver=$(cat "$SCRIPT_VERSION_CACHE_FILE" 2>/dev/null)
+    [[ -z "$remote_ver" ]] && return 1
+    _version_gt "$remote_ver" "$VERSION"
+}
+
+_get_script_update_info() {
+    [[ -f "$SCRIPT_VERSION_CACHE_FILE" ]] || return 1
+    local remote_ver
+    remote_ver=$(cat "$SCRIPT_VERSION_CACHE_FILE" 2>/dev/null)
+    if _version_gt "$remote_ver" "$VERSION"; then
+        echo "$remote_ver"
+    fi
 }
 
 _get_snell_versions_from_kb() {
@@ -4381,7 +4511,7 @@ _get_version_status() {
         echo ""
     else
         # [可更新] 使用亮橙色，显示后恢复默认样式
-        echo " \e[22;93m[可更新]\e[0m"
+        echo " \e[22;93m[可更新]\e[0m\e[2m"
     fi
 }
 
@@ -7142,8 +7272,7 @@ create_shortcut() {
             cp -f "$real_path" "$system_script"
         else
             # 内存运行模式，从网络下载
-            local raw_url="https://raw.githubusercontent.com/Chil30/vless-all-in-one/main/vless-server.sh"
-            if ! curl -sL --connect-timeout 10 -o "$system_script" "$raw_url"; then
+            if ! _download_script_to "$system_script"; then
                 _warn "无法下载脚本到系统目录"
                 return 1
             fi
@@ -16632,43 +16761,18 @@ do_update() {
     echo -e "  当前版本: ${G}v${VERSION}${NC}"
     _info "检查最新版本..."
     
-    local raw_url="https://raw.githubusercontent.com/Chil30/vless-all-in-one/main/vless-server.sh"
-    local tmp_file=$(mktemp)
-    
-    # 下载最新脚本
-    if ! curl -sL --connect-timeout 10 -o "$tmp_file" "$raw_url"; then
-        rm -f "$tmp_file"
-        _err "下载失败，请检查网络连接"
-        return 1
-    fi
-    
-    # 获取远程版本号
-    local remote_ver=$(grep -m1 '^readonly VERSION=' "$tmp_file" 2>/dev/null | cut -d'"' -f2)
+    _init_version_cache
+    local tmp_file="" remote_ver=""
+    remote_ver=$(_get_latest_script_version "true" "false")
     if [[ -z "$remote_ver" ]]; then
-        rm -f "$tmp_file"
         _err "无法获取远程版本信息"
         return 1
     fi
     
     echo -e "  最新版本: ${C}v${remote_ver}${NC}"
     
-    # 语义化版本比较函数
-    _version_gt() {
-        local v1="$1" v2="$2"
-        [[ "$v1" == "$v2" ]] && return 1
-        local IFS=.
-        local i v1_arr=($v1) v2_arr=($v2)
-        for ((i=0; i<${#v1_arr[@]} || i<${#v2_arr[@]}; i++)); do
-            local n1=${v1_arr[i]:-0} n2=${v2_arr[i]:-0}
-            ((n1 > n2)) && return 0
-            ((n1 < n2)) && return 1
-        done
-        return 1
-    }
-    
     # 比较版本 - 只有远程版本更新时才提示更新
     if ! _version_gt "$remote_ver" "$VERSION"; then
-        rm -f "$tmp_file"
         _ok "已是最新版本"
         return 0
     fi
@@ -16676,11 +16780,21 @@ do_update() {
     _line
     read -rp "  发现新版本，是否更新? [Y/n]: " confirm
     if [[ "$confirm" =~ ^[nN]$ ]]; then
-        rm -f "$tmp_file"
         return 0
     fi
     
     _info "更新中..."
+    tmp_file=$(_fetch_script_tmp 10)
+    if [[ -z "$tmp_file" || ! -f "$tmp_file" ]]; then
+        _err "下载失败，请检查网络连接"
+        return 1
+    fi
+    local downloaded_ver
+    downloaded_ver=$(_extract_script_version "$tmp_file")
+    if [[ -n "$downloaded_ver" && "$downloaded_ver" != "$remote_ver" ]]; then
+        remote_ver="$downloaded_ver"
+        echo "$remote_ver" > "$SCRIPT_VERSION_CACHE_FILE" 2>/dev/null
+    fi
     
     # 获取当前脚本路径
     local script_path=$(readlink -f "$0")
@@ -16732,6 +16846,7 @@ main_menu() {
     # 使用统一函数，一次请求同时获取稳定版和测试版（减少API请求次数）
     _update_all_versions_async "XTLS/Xray-core"
     _update_all_versions_async "SagerNet/sing-box"
+    _check_script_update_async
 
     while true; do
         _header
@@ -16757,6 +16872,10 @@ main_menu() {
         local xray_ver_with_status singbox_ver_with_status
         xray_ver_with_status=$(_get_core_version_with_status "xray" "XTLS/Xray-core")
         singbox_ver_with_status=$(_get_core_version_with_status "sing-box" "SagerNet/sing-box")
+        local script_update_ver=""
+        if _has_script_update; then
+            script_update_ver=$(_get_script_update_info)
+        fi
 
         # 启动异步版本检查（后台，仅首次进入时触发）
         if [[ -z "$_version_check_started" ]]; then
@@ -16770,6 +16889,9 @@ main_menu() {
         # 显示版本信息（已包含状态标识）
         echo -e "  ${D}系统: ${os_version} | ${kernel_version}${NC}"
         echo -e "  ${D}核心: Xray ${xray_ver_with_status} | Sing-box ${singbox_ver_with_status}${NC}"
+        if [[ -n "$script_update_ver" ]]; then
+            echo -e "  ${Y}提示: 脚本有新版本 v${script_update_ver}，可在菜单选择「检查脚本更新」${NC}"
+        fi
         echo ""
         show_status
         echo ""
@@ -16798,7 +16920,9 @@ main_menu() {
             _item "2" "导入配置 (从备份恢复)"
         fi
         echo -e "  ${D}───────────────────────────────────────────${NC}"
-        _item "11" "检查脚本更新"
+        local script_update_item="检查脚本更新"
+        [[ -n "$script_update_ver" ]] && script_update_item="检查脚本更新 ${Y}[有更新 v${script_update_ver}]${NC}"
+        _item "11" "$script_update_item"
         _item "12" "完全卸载"
         _item "0" "退出"
         _line

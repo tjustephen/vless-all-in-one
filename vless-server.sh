@@ -13939,7 +13939,8 @@ do_install_server() {
             gen_vless_vision_server_config "$uuid" "$port" "$final_sni"
             ;;
         socks)
-            local username=$(gen_password 8) password=$(gen_password)
+            local username_default=$(gen_password 8) password_default=$(gen_password)
+            local username="$username_default" password="$password_default"
             local use_tls="false" sni=""
             
             # 询问是否启用 TLS
@@ -13966,6 +13967,15 @@ do_install_server() {
                     gen_self_cert "$sni"
                 fi
             fi
+
+            echo ""
+            _line
+            echo -e "  ${W}SOCKS5 账号设置${NC}"
+            _line
+            read -rp "  请输入用户名 [回车使用 $username_default]: " _username
+            [[ -n "$_username" ]] && username="$_username"
+            read -rp "  请输入密码 [回车使用 $password_default]: " _password
+            [[ -n "$_password" ]] && password="$_password"
             
             echo ""
             _line

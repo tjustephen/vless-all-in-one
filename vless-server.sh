@@ -15294,7 +15294,7 @@ do_install_server() {
             echo -e "  端口: ${G}$port${NC}"
             if [[ "$auth_mode" == "noauth" ]]; then
                 echo -e "  认证: ${D}无认证${NC}"
-                echo -e "  监听地���: ${G}$listen_addr${NC}"
+                echo -e "  监听地址: ${G}$listen_addr${NC}"
             else
                 echo -e "  认证: ${G}用户名密码${NC}"
                 echo -e "  用户名: ${G}$username${NC}"

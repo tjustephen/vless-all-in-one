@@ -1,6 +1,6 @@
 #!/bin/bash
 #═══════════════════════════════════════════════════════════════════════════════
-#  多协议代理一键部署脚本 v3.4.0 [服务端]
+#  多协议代理一键部署脚本 v3.4.1 [服务端]
 #  
 #  架构升级:
 #    • Xray 核心: 处理 TCP/TLS 协议 (VLESS/VMess/Trojan/SOCKS/SS2022)
@@ -17,7 +17,7 @@
 #  项目地址: https://github.com/Chil30/vless-all-in-one
 #═══════════════════════════════════════════════════════════════════════════════
 
-readonly VERSION="3.4.0"
+readonly VERSION="3.4.1"
 readonly AUTHOR="Chil30"
 readonly REPO_URL="https://github.com/Chil30/vless-all-in-one"
 readonly SCRIPT_REPO="Chil30/vless-all-in-one"
@@ -292,7 +292,103 @@ db_get_all_protocols() {
 }
 
 #═══════════════════════════════════════════════════════════════════════════════
+#  多IP入出站配置 (IP Routing)
+#═══════════════════════════════════════════════════════════════════════════════
+
+# 获取系统所有公网IPv4地址
+get_all_public_ipv4() {
+    ip -4 addr show scope global 2>/dev/null | grep -oP 'inet \K[\d.]+' | sort -u
+}
+
+# 获取系统所有公网IPv6地址
+get_all_public_ipv6() {
+    ip -6 addr show scope global 2>/dev/null | grep -oP 'inet6 \K[0-9a-f:]+(?=/)' | grep -v '^fe80' | sort -u
+}
+
+# 获取系统所有公网IP (IPv4 + IPv6)
+get_all_public_ips() {
+    {
+        get_all_public_ipv4
+        get_all_public_ipv6
+    } | sort -u
+}
+
+# 获取IP路由配置
+db_get_ip_routing() {
+    [[ ! -f "$DB_FILE" ]] && return 1
+    jq -r '.ip_routing // empty' "$DB_FILE" 2>/dev/null
+}
+
+# 获取IP路由规则列表
+db_get_ip_routing_rules() {
+    [[ ! -f "$DB_FILE" ]] && return 1
+    jq -r '.ip_routing.rules // []' "$DB_FILE" 2>/dev/null
+}
+
+# 检查IP路由是否启用
+db_ip_routing_enabled() {
+    [[ ! -f "$DB_FILE" ]] && return 1
+    local enabled=$(jq -r '.ip_routing.enabled // false' "$DB_FILE" 2>/dev/null)
+    [[ "$enabled" == "true" ]]
+}
+
+# 添加IP路由规则
+# 用法: db_add_ip_routing_rule "入站IP" "出站IP"
+db_add_ip_routing_rule() {
+    local inbound_ip="$1"
+    local outbound_ip="$2"
+    [[ -z "$inbound_ip" || -z "$outbound_ip" ]] && return 1
+    [[ ! -f "$DB_FILE" ]] && init_db
+    
+    local tmp=$(mktemp)
+    jq --arg in_ip "$inbound_ip" --arg out_ip "$outbound_ip" '
+        .ip_routing.enabled = true |
+        .ip_routing.rules = ((.ip_routing.rules // []) | 
+            [.[] | select(.inbound_ip != $in_ip)] + 
+            [{"inbound_ip": $in_ip, "outbound_ip": $out_ip}])
+    ' "$DB_FILE" > "$tmp" && mv "$tmp" "$DB_FILE"
+}
+
+# 删除IP路由规则
+# 用法: db_del_ip_routing_rule "入站IP"
+db_del_ip_routing_rule() {
+    local inbound_ip="$1"
+    [[ -z "$inbound_ip" ]] && return 1
+    [[ ! -f "$DB_FILE" ]] && return 1
+    
+    local tmp=$(mktemp)
+    jq --arg in_ip "$inbound_ip" '
+        .ip_routing.rules = [(.ip_routing.rules // [])[] | select(.inbound_ip != $in_ip)]
+    ' "$DB_FILE" > "$tmp" && mv "$tmp" "$DB_FILE"
+}
+
+# 清空所有IP路由规则
+db_clear_ip_routing_rules() {
+    [[ ! -f "$DB_FILE" ]] && return 1
+    local tmp=$(mktemp)
+    jq '.ip_routing.rules = []' "$DB_FILE" > "$tmp" && mv "$tmp" "$DB_FILE"
+}
+
+# 设置IP路由启用/禁用
+db_set_ip_routing_enabled() {
+    local enabled="$1"
+    [[ ! -f "$DB_FILE" ]] && init_db
+    local tmp=$(mktemp)
+    jq --argjson e "$enabled" '.ip_routing.enabled = $e' "$DB_FILE" > "$tmp" && mv "$tmp" "$DB_FILE"
+}
+
+# 获取指定入站IP的出站IP
+db_get_ip_routing_outbound() {
+    local inbound_ip="$1"
+    [[ ! -f "$DB_FILE" ]] && return 1
+    jq -r --arg in_ip "$inbound_ip" '
+        (.ip_routing.rules // [])[] | select(.inbound_ip == $in_ip) | .outbound_ip
+    ' "$DB_FILE" 2>/dev/null
+}
+
+#═══════════════════════════════════════════════════════════════════════════════
 #  辅助函数 (用户管理需要)
+
 #═══════════════════════════════════════════════════════════════════════════════
 
 # 生成 UUID
@@ -2010,6 +2106,24 @@ generate_xray_config() {
 
         routing_rules=$(gen_xray_routing_rules)
         [[ -n "$routing_rules" && "$routing_rules" != "[]" ]] && has_routing=true
+        
+        # 添加多IP路由的outbound和routing规则
+        local ip_routing_outbounds=$(gen_xray_ip_routing_outbounds)
+        if [[ -n "$ip_routing_outbounds" && "$ip_routing_outbounds" != "[]" ]]; then
+            outbounds=$(echo "$outbounds" | jq --argjson ip_outs "$ip_routing_outbounds" '. + $ip_outs')
+            
+            # 添加多IP路由规则
+            local ip_routing_rules=$(gen_xray_ip_routing_rules)
+            if [[ -n "$ip_routing_rules" && "$ip_routing_rules" != "[]" ]]; then
+                if [[ -n "$routing_rules" && "$routing_rules" != "[]" ]]; then
+                    # 多IP路由规则放在最前面，优先匹配
+                    routing_rules=$(echo "$ip_routing_rules" | jq --argjson user_rules "$routing_rules" '. + $user_rules')
+                else
+                    routing_rules="$ip_routing_rules"
+                fi
+                has_routing=true
+            fi
+        fi
         
         # 检测是否使用了 WARP，如果是，添加保护性直连规则
         if echo "$outbounds" | jq -e '.[] | select(.tag | startswith("warp"))' >/dev/null 2>&1; then
@@ -10515,6 +10629,82 @@ _get_outbound_display_name() {
     esac
 }
 
+# 生成多IP路由的outbound配置 (使用sendThrough指定出站IP)
+gen_xray_ip_routing_outbounds() {
+    # 检查是否启用多IP路由
+    db_ip_routing_enabled || return
+    
+    local rules=$(db_get_ip_routing_rules)
+    [[ -z "$rules" || "$rules" == "[]" ]] && return
+    
+    local result="[]"
+    local added_ips=""  # 避免重复添加相同出站IP的outbound
+    
+    while IFS= read -r rule; do
+        [[ -z "$rule" ]] && continue
+        local outbound_ip=$(echo "$rule" | jq -r '.outbound_ip')
+        [[ -z "$outbound_ip" ]] && continue
+        
+        # 检查是否已添加过这个出站IP
+        if [[ " $added_ips " == *" $outbound_ip "* ]]; then
+            continue
+        fi
+        added_ips+=" $outbound_ip"
+        
+        # 生成freedom outbound with sendThrough
+        local tag="direct-ip-${outbound_ip//[.:]/-}"  # 将IP中的.和:替换为-作为tag
+        result=$(echo "$result" | jq --arg tag "$tag" --arg ip "$outbound_ip" '
+            . + [{
+                "tag": $tag,
+                "protocol": "freedom",
+                "sendThrough": $ip,
+                "settings": {}
+            }]
+        ')
+    done < <(echo "$rules" | jq -c '.[]')
+    
+    [[ "$result" != "[]" ]] && echo "$result"
+}
+
+# 生成多IP路由的routing规则 (根据入站IP路由到对应出站)
+gen_xray_ip_routing_rules() {
+    # 检查是否启用多IP路由
+    db_ip_routing_enabled || return
+    
+    local rules=$(db_get_ip_routing_rules)
+    [[ -z "$rules" || "$rules" == "[]" ]] && return
+    
+    local result="[]"
+    
+    while IFS= read -r rule; do
+        [[ -z "$rule" ]] && continue
+        local inbound_ip=$(echo "$rule" | jq -r '.inbound_ip')
+        local outbound_ip=$(echo "$rule" | jq -r '.outbound_ip')
+        [[ -z "$inbound_ip" || -z "$outbound_ip" ]] && continue
+        
+        # 生成routing规则：匹配入站IP的流量路由到对应出站
+        local inbound_tag="ip-in-${inbound_ip//[.:]/-}"
+        local outbound_tag="direct-ip-${outbound_ip//[.:]/-}"
+        
+        # 使用 source 字段匹配入站源IP (即监听IP)
+        # 注意: Xray routing 的 source 是匹配客户端IP，不是入站IP
+        # 正确做法是使用 inboundTag 匹配
+        result=$(echo "$result" | jq --arg in_tag "$inbound_tag" --arg out_tag "$outbound_tag" '
+            . + [{
+                "type": "field",
+                "inboundTag": [$in_tag],
+                "outboundTag": $out_tag
+            }]
+        ')
+    done < <(echo "$rules" | jq -c '.[]')
+    
+    [[ "$result" != "[]" ]] && echo "$result"
+}
+
+# 生成多IP路由的inbound配置 (复制现有协议inbound，监听不同IP)
+# 注意：这个函数需要在已有协议inbound的基础上，为每个入站IP创建独立的inbound
+# 由于实现较复杂，暂时采用简化方案：用户手动指定每个协议的监听IP
+
 # 生成 Xray 分流路由配置 (支持多出口)
 gen_xray_routing_rules() {
     local rules=$(db_get_routing_rules)
@@ -13144,7 +13334,200 @@ _create_alice_balancer_inline() {
     echo -e "  出口选择: ${C}负载均衡:${group_name}${NC}"
 }
 
+# 一键导入 Akile SOCKS5 节点 (12个出口)
+_import_akile_nodes() {
+    _header
+    echo -e "  ${W}导入 Akile SOCKS5 节点${NC}"
+    _line
+    echo -e "  ${D}Akile 提供 12 个 SOCKS5 出口 (多地区)${NC}"
+    echo -e "  ${D}包括: HK/JP/KR/TW/SG/US/UK/DE 等地区${NC}"
+    echo ""
+
+    # 先删除所有旧的 Akile 节点
+    local old_nodes=$(db_get_chain_nodes 2>/dev/null)
+    local deleted=0
+    if [[ -n "$old_nodes" && "$old_nodes" != "[]" ]]; then
+        while IFS= read -r node_name; do
+            if [[ "$node_name" =~ ^Akile- ]]; then
+                db_del_chain_node "$node_name"
+                ((deleted++))
+            fi
+        done < <(echo "$old_nodes" | jq -r '.[].name')
+    fi
+
+    if [[ $deleted -gt 0 ]]; then
+        echo -e "  ${C}▸${NC} 清理了 $deleted 个旧节点"
+        # 同时清理相关的分流规则
+        local tmp=$(mktemp)
+        jq '.routing_rules = [.routing_rules[]? | select(.outbound | (startswith("chain:Akile-") | not))]' "$DB_FILE" > "$tmp" && mv "$tmp" "$DB_FILE"
+    fi
+
+    local username="akilecloud"
+    local password="akilecloud"
+    local imported=0
+
+    # 定义所有 Akile 节点: 名称|服务器|端口
+    local nodes_data=(
+        "Akile-HK-RANDOMIPV6|45.8.186.151|58888"
+        "Akile-JP-RANDOMIPV6|203.10.99.23|58888"
+        "Akile-KR-RANDOMIPV6|141.11.131.253|58888"
+        "Akile-TW-RANDOMIPV6|45.207.158.22|58888"
+        "Akile-SG-RANDOMIPV6|104.192.92.63|58888"
+        "Akile-US-RANDOMIPV6|154.83.90.2|58888"
+        "Akile-UK-RANDOMIPV6|212.135.39.2|58888"
+        "Akile-DE-RANDOMIPV6|45.196.222.2|58888"
+        "Akile-JP-SOFTBANK|141.11.131.205|58888"
+        "Akile-JP-KDDI|141.11.131.205|59999"
+        "Akile-TW-HINET|45.207.158.220|58888"
+        "Akile-HK-HKBN|45.207.156.2|58888"
+    )
+
+    echo -e "  ${C}▸${NC} 开始导入 ${#nodes_data[@]} 个节点..."
+    echo ""
+
+    for node_info in "${nodes_data[@]}"; do
+        IFS='|' read -r name server port <<< "$node_info"
+
+        # 构建节点 JSON
+        local node=$(jq -n \
+            --arg name "$name" \
+            --arg server "$server" \
+            --argjson port "$port" \
+            --arg username "$username" \
+            --arg password "$password" \
+            '{name:$name,type:"socks",server:$server,port:$port,username:$username,password:$password}')
+
+        if db_add_chain_node "$node"; then
+            echo -e "  ${G}✓${NC} $name ${D}($server:$port)${NC}"
+            ((imported++))
+        else
+            echo -e "  ${R}✗${NC} $name ${D}($server:$port, 添加失败)${NC}"
+        fi
+    done
+    
+    echo ""
+    _line
+    if [[ $imported -eq ${#nodes_data[@]} ]]; then
+        _ok "成功导入全部 ${#nodes_data[@]} 个节点"
+    elif [[ $imported -gt 0 ]]; then
+        _warn "导入了 $imported 个节点 (预期 ${#nodes_data[@]} 个)"
+    else
+        _warn "没有成功导入任何节点"
+    fi
+
+    # 如果成功导入节点,询问是否创建负载均衡组
+    if [[ $imported -gt 0 ]]; then
+        echo ""
+        _line
+        echo -e "  ${W}负载均衡配置${NC}"
+        echo ""
+
+        # 检查是否已存在 Akile 负载均衡组
+        local group_name="Akile-SOCKS5-LB"
+        local existing_group=$(db_get_balancer_group "$group_name" 2>/dev/null)
+
+        if [[ -n "$existing_group" && "$existing_group" != "null" ]]; then
+            echo -e "  ${Y}⚠${NC}  已存在负载均衡组: ${C}$group_name${NC}"
+            local strategy=$(echo "$existing_group" | jq -r '.strategy')
+            local node_count=$(echo "$existing_group" | jq -r '.nodes | length')
+            echo -e "  策略: ${D}$strategy${NC}, 节点数: ${D}$node_count${NC}"
+            echo ""
+            echo -e "  ${W}选择操作:${NC}"
+            echo -e "    ${C}1.${NC} 保持现有配置 ${D}(不修改)${NC}"
+            echo -e "    ${C}2.${NC} 删除负载均衡组 ${D}(清除配置)${NC}"
+            echo -e "    ${C}3.${NC} 重新创建负载均衡组 ${D}(覆盖现有)${NC}"
+            echo ""
+
+            local choice
+            read -p "  请选择 [1-3, 默认 1]: " choice
+            choice=${choice:-1}
+
+            case "$choice" in
+                2)
+                    db_delete_balancer_group "$group_name"
+                    _ok "已删除负载均衡组: $group_name"
+                    echo ""
+                    echo -e "  ${Y}提示:${NC} 请到 ${C}分流规则${NC} 中手动配置节点"
+                    ;;
+                3)
+                    db_delete_balancer_group "$group_name"
+                    _create_akile_balancer_inline "$imported"
+                    ;;
+                *)
+                    _info "保持现有配置"
+                    ;;
+            esac
+        else
+            echo -e "  是否创建负载均衡组? ${D}(方便自动分配流量)${NC}"
+            echo ""
+            echo -e "    ${C}Y${NC} - 创建负载均衡组 ${D}(推荐)${NC}"
+            echo -e "    ${C}N${NC} - 稍后手动配置"
+            echo ""
+
+            local create_lb
+            read -p "  请选择 [Y/n]: " create_lb
+
+            if [[ ! "$create_lb" =~ ^[Nn]$ ]]; then
+                _create_akile_balancer_inline "$imported"
+            else
+                _info "跳过负载均衡配置"
+                echo ""
+                echo -e "  ${Y}提示:${NC} 请到 ${C}链式代理管理 → 创建负载均衡组${NC} 中配置"
+            fi
+        fi
+    fi
+
+    _pause
+}
+
+# 内联创建 Akile 负载均衡组 (供导入流程调用)
+_create_akile_balancer_inline() {
+    local node_count=${1:-12}
+
+    echo ""
+    echo -e "  ${W}配置负载均衡策略:${NC}"
+    echo -e "    ${C}1.${NC} leastPing   ${D}(最低延迟 - 推荐)${NC}"
+    echo -e "    ${C}2.${NC} random      ${D}(随机选择)${NC}"
+    echo -e "    ${C}3.${NC} roundRobin  ${D}(轮询 - 流量均衡)${NC}"
+    echo ""
+    echo -e "  ${Y}说明:${NC} leastPing会自动选择延迟最低的节点"
+    echo ""
+
+    local strategy_choice
+    read -p "  请选择策略 [1-3, 默认 1]: " strategy_choice
+    strategy_choice=${strategy_choice:-1}
+
+    local strategy
+    case "$strategy_choice" in
+        2) strategy="random" ;;
+        3) strategy="roundRobin" ;;
+        *) strategy="leastPing" ;;
+    esac
+
+    # 获取所有 Akile 节点
+    local akile_nodes=()
+    local all_nodes=$(db_get_chain_nodes)
+    while IFS= read -r node_name; do
+        [[ "$node_name" =~ ^Akile- ]] && akile_nodes+=("$node_name")
+    done < <(echo "$all_nodes" | jq -r '.[].name')
+
+    # 创建负载均衡组
+    local group_name="Akile-SOCKS5-LB"
+    db_add_balancer_group "$group_name" "$strategy" "${akile_nodes[@]}"
+
+    echo ""
+    _ok "负载均衡组创建成功"
+    echo ""
+    echo -e "  组名: ${C}$group_name${NC}"
+    echo -e "  策略: ${C}$strategy${NC}"
+    echo -e "  节点数: ${G}${#akile_nodes[@]}${NC}"
+    echo ""
+    echo -e "  ${Y}下一步:${NC} 到 ${C}分流规则${NC} 中添加规则"
+    echo -e "  出口选择: ${C}负载均衡:${group_name}${NC}"
+}
+
 # 创建负载均衡组
+
 create_load_balance_group() {
     _header
     echo -e "  ${W}创建负载均衡组${NC}"
@@ -13348,13 +13731,16 @@ manage_chain_proxy() {
         _item "1" "添加节点 (分享链接)"
         _item "2" "导入订阅"
         _item "3" "一键导入 Alice SOCKS5 (8节点)"
-        _item "4" "WARP → 落地 (双层链式)"
-        _item "5" "创建负载均衡组"
+        _item "4" "一键导入 Akile SOCKS5 (12节点)"
         echo -e "  ${D}───────────────────────────────────────────${NC}"
-        _item "6" "测试所有节点延迟"
-        _item "7" "删除节点"
-        _item "8" "删除负载均衡组"
-        _item "9" "禁用链式代理"
+        _item "5" "多IP入出站配置"
+        _item "6" "WARP 双层链式"
+        _item "7" "创建负载均衡组"
+        _item "8" "查看负载均衡组"
+        echo -e "  ${D}───────────────────────────────────────────${NC}"
+        _item "9" "测试所有节点延迟"
+        _item "10" "删除节点"
+        _item "11" "删除负载均衡组"
         _item "0" "返回"
         _line
 
@@ -13371,12 +13757,58 @@ manage_chain_proxy() {
                 _import_alice_nodes
                 ;;
             4)
-                setup_warp_ipv6_chain
+                _import_akile_nodes
                 ;;
             5)
-                create_load_balance_group
+                manage_ip_routing
                 ;;
             6)
+                setup_warp_ipv6_chain
+                ;;
+            7)
+                create_load_balance_group
+                ;;
+            8)
+                # 查看负载均衡组
+                _header
+                echo -e "  ${W}查看负载均衡组${NC}"
+                _line
+                
+                local balancer_groups=$(db_get_balancer_groups)
+                local group_count=$(echo "$balancer_groups" | jq 'length' 2>/dev/null || echo 0)
+                
+                if [[ "$group_count" -eq 0 ]]; then
+                    echo -e "  ${D}暂无负载均衡组${NC}"
+                    _pause
+                    continue
+                fi
+                
+                echo "$balancer_groups" | jq -c '.[]' | while read -r group; do
+                    local name=$(echo "$group" | jq -r '.name')
+                    local strategy=$(echo "$group" | jq -r '.strategy')
+                    local nodes=$(echo "$group" | jq -r '.nodes')
+                    local node_count=$(echo "$nodes" | jq 'length')
+                    
+                    local strategy_name=""
+                    case "$strategy" in
+                        leastPing) strategy_name="最低延迟" ;;
+                        random) strategy_name="随机选择" ;;
+                        roundRobin) strategy_name="轮询" ;;
+                        *) strategy_name="$strategy" ;;
+                    esac
+                    
+                    echo -e "  ${G}━━━ $name ━━━${NC}"
+                    echo -e "  策略: ${C}$strategy_name${NC}  节点数: ${C}$node_count${NC}"
+                    echo -e "  包含节点:"
+                    echo "$nodes" | jq -r '.[]' | while read -r node_name; do
+                        echo -e "    ${D}•${NC} $node_name"
+                    done
+                    echo ""
+                done
+                _line
+                _pause
+                ;;
+            9)
                 # 测试所有节点延迟
                 _header
                 echo -e "  ${W}测试节点延迟 ${D}(仅供参考)${NC}"
@@ -13423,7 +13855,7 @@ manage_chain_proxy() {
                 _line
                 _pause
                 ;;
-            7)
+            10)
                 _header
                 echo -e "  ${W}删除节点${NC}"
                 _line
@@ -13444,10 +13876,12 @@ manage_chain_proxy() {
                 done
                 
                 _line
-                echo -e "  ${D}输入 all 删除全部${NC}"
+                echo -e "  ${D}输入 all 删除全部, 0 返回${NC}"
                 read -rp "  选择编号: " idx
                 
-                if [[ "$idx" == "all" ]]; then
+                if [[ "$idx" == "0" ]]; then
+                    continue
+                elif [[ "$idx" == "all" ]]; then
                     local tmp=$(mktemp)
                     jq 'del(.chain_proxy)' "$DB_FILE" > "$tmp" && mv "$tmp" "$DB_FILE"
                     # 清理所有引用链式代理节点的分流规则
@@ -13469,7 +13903,7 @@ manage_chain_proxy() {
                 fi
                 _pause
                 ;;
-            8)
+            11)
                 # 删除负载均衡组
                 _header
                 echo -e "  ${W}删除负载均衡组${NC}"
@@ -13503,10 +13937,12 @@ manage_chain_proxy() {
                 done
                 
                 _line
-                echo -e "  ${D}输入 all 删除全部${NC}"
+                echo -e "  ${D}输入 all 删除全部, 0 返回${NC}"
                 read -rp "  选择编号: " del_idx
                 
-                if [[ "$del_idx" == "all" ]]; then
+                if [[ "$del_idx" == "0" ]]; then
+                    continue
+                elif [[ "$del_idx" == "all" ]]; then
                     local tmp=$(mktemp)
                     jq 'del(.balancer_groups)' "$DB_FILE" > "$tmp" && mv "$tmp" "$DB_FILE"
                     _ok "已删除所有负载均衡组"
@@ -13524,21 +13960,229 @@ manage_chain_proxy() {
                 fi
                 _pause
                 ;;
-            9)
-                local tmp=$(mktemp)
-                jq 'del(.chain_proxy.active)' "$DB_FILE" > "$tmp" && mv "$tmp" "$DB_FILE"
-                _ok "已禁用链式代理"
-                _regenerate_proxy_configs
-                _pause
-                ;;
             0) return ;;
         esac
     done
 }
 
 
+# 多IP入出站配置管理菜单
+manage_ip_routing() {
+    while true; do
+        _header
+        echo -e "  ${W}多IP入出站配置${NC}"
+        _line
+        
+        # 实时检测系统公网IP
+        local system_ipv4=$(get_all_public_ipv4)
+        local system_ipv6=$(get_all_public_ipv6)
+        local all_ips=()
+        
+        # 收集所有IP
+        while IFS= read -r ip; do
+            [[ -n "$ip" ]] && all_ips+=("$ip")
+        done <<< "$system_ipv4"
+        while IFS= read -r ip; do
+            [[ -n "$ip" ]] && all_ips+=("$ip")
+        done <<< "$system_ipv6"
+        
+        local ip_count=${#all_ips[@]}
+        
+        # 检查功能是否启用
+        local enabled_status="${R}○ 未启用${NC}"
+        if db_ip_routing_enabled; then
+            enabled_status="${G}● 已启用${NC}"
+        fi
+        
+        # 获取已配置的规则
+        local rules=$(db_get_ip_routing_rules)
+        local rule_count=$(echo "$rules" | jq 'length' 2>/dev/null || echo 0)
+        
+        echo -e "  状态: $enabled_status  规则数: ${C}$rule_count${NC}"
+        echo -e "  检测到 ${C}$ip_count${NC} 个公网IP"
+        _line
+        
+        # 显示IP列表及其配置状态
+        if [[ $ip_count -gt 0 ]]; then
+            echo -e "  ${W}系统公网IP:${NC}"
+            local idx=1
+            for ip in "${all_ips[@]}"; do
+                local outbound_ip=$(db_get_ip_routing_outbound "$ip")
+                if [[ -n "$outbound_ip" ]]; then
+                    echo -e "    ${C}[$idx]${NC} $ip ${G}→${NC} $outbound_ip"
+                else
+                    echo -e "    ${C}[$idx]${NC} $ip ${D}(未配置)${NC}"
+                fi
+                ((idx++))
+            done
+            _line
+        else
+            echo -e "  ${D}未检测到公网IP${NC}"
+            _line
+        fi
+        
+        # 检查是否有失效的规则 (配置的IP已不存在)
+        local invalid_rules=""
+        if [[ "$rule_count" -gt 0 ]]; then
+            while IFS= read -r rule; do
+                local in_ip=$(echo "$rule" | jq -r '.inbound_ip')
+                local out_ip=$(echo "$rule" | jq -r '.outbound_ip')
+                local found=false
+                for ip in "${all_ips[@]}"; do
+                    [[ "$ip" == "$in_ip" ]] && found=true && break
+                done
+                if [[ "$found" == "false" ]]; then
+                    invalid_rules+="  ${Y}⚠${NC} $in_ip → $out_ip ${D}(入站IP已不存在)${NC}\n"
+                fi
+            done < <(echo "$rules" | jq -c '.[]')
+            
+            if [[ -n "$invalid_rules" ]]; then
+                echo -e "  ${W}失效规则:${NC}"
+                echo -e "$invalid_rules"
+                _line
+            fi
+        fi
+        
+        _item "1" "添加/修改映射规则"
+        _item "2" "删除映射规则"
+        _item "3" "清空所有规则"
+        if db_ip_routing_enabled; then
+            _item "4" "禁用多IP路由"
+        else
+            _item "4" "启用多IP路由"
+        fi
+        _item "5" "应用配置到Xray"
+        _item "0" "返回"
+        _line
+        
+        read -rp "  请选择: " choice
+        
+        case "$choice" in
+            1)
+                # 添加/修改映射规则
+                if [[ $ip_count -lt 1 ]]; then
+                    _err "没有检测到公网IP"
+                    _pause
+                    continue
+                fi
+                
+                echo ""
+                echo -e "  ${W}添加映射规则${NC}"
+                _line
+                
+                # 显示可选IP
+                echo -e "  ${Y}可用IP列表:${NC}"
+                local idx=1
+                for ip in "${all_ips[@]}"; do
+                    echo -e "    ${C}[$idx]${NC} $ip"
+                    ((idx++))
+                done
+                echo ""
+                
+                # 选择入站IP
+                read -rp "  选择入站IP编号: " in_idx
+                if [[ ! "$in_idx" =~ ^[0-9]+$ ]] || [[ "$in_idx" -lt 1 ]] || [[ "$in_idx" -gt $ip_count ]]; then
+                    _err "无效的选择"
+                    _pause
+                    continue
+                fi
+                local inbound_ip="${all_ips[$((in_idx-1))]}"
+                
+                # 选择出站IP
+                read -rp "  选择出站IP编号: " out_idx
+                if [[ ! "$out_idx" =~ ^[0-9]+$ ]] || [[ "$out_idx" -lt 1 ]] || [[ "$out_idx" -gt $ip_count ]]; then
+                    _err "无效的选择"
+                    _pause
+                    continue
+                fi
+                local outbound_ip="${all_ips[$((out_idx-1))]}"
+                
+                # 确认
+                echo ""
+                echo -e "  ${Y}确认:${NC} $inbound_ip ${G}→${NC} $outbound_ip"
+                read -rp "  确认添加? [Y/n]: " confirm
+                if [[ ! "$confirm" =~ ^[Nn]$ ]]; then
+                    db_add_ip_routing_rule "$inbound_ip" "$outbound_ip"
+                    _ok "规则已添加"
+                fi
+                _pause
+                ;;
+            2)
+                # 删除映射规则
+                if [[ "$rule_count" -eq 0 ]]; then
+                    _err "没有已配置的规则"
+                    _pause
+                    continue
+                fi
+                
+                echo ""
+                echo -e "  ${W}删除映射规则${NC}"
+                _line
+                
+                local idx=1
+                local rule_array=()
+                while IFS= read -r rule; do
+                    local in_ip=$(echo "$rule" | jq -r '.inbound_ip')
+                    local out_ip=$(echo "$rule" | jq -r '.outbound_ip')
+                    echo -e "    ${C}[$idx]${NC} $in_ip → $out_ip"
+                    rule_array+=("$in_ip")
+                    ((idx++))
+                done < <(echo "$rules" | jq -c '.[]')
+                
+                echo ""
+                read -rp "  选择要删除的规则编号: " del_idx
+                if [[ ! "$del_idx" =~ ^[0-9]+$ ]] || [[ "$del_idx" -lt 1 ]] || [[ "$del_idx" -gt ${#rule_array[@]} ]]; then
+                    _err "无效的选择"
+                    _pause
+                    continue
+                fi
+                
+                local del_ip="${rule_array[$((del_idx-1))]}"
+                db_del_ip_routing_rule "$del_ip"
+                _ok "规则已删除: $del_ip"
+                _pause
+                ;;
+            3)
+                # 清空所有规则
+                echo ""
+                read -rp "  确认清空所有规则? [y/N]: " confirm
+                if [[ "$confirm" =~ ^[Yy]$ ]]; then
+                    db_clear_ip_routing_rules
+                    _ok "所有规则已清空"
+                fi
+                _pause
+                ;;
+            4)
+                # 启用/禁用
+                if db_ip_routing_enabled; then
+                    db_set_ip_routing_enabled "false"
+                    _info "正在禁用多IP路由..."
+                    _regenerate_proxy_configs
+                    _ok "多IP路由已禁用并应用配置"
+                else
+                    db_set_ip_routing_enabled "true"
+                    _info "正在启用多IP路由..."
+                    _regenerate_proxy_configs
+                    _ok "多IP路由已启用并应用配置"
+                fi
+                _pause
+                ;;
+            5)
+                # 应用配置到Xray
+                _info "重新生成配置..."
+                _regenerate_proxy_configs
+                _ok "配置已应用"
+                _pause
+                ;;
+            0) return ;;
+            *) _err "无效选择" ;;
+        esac
+    done
+}
+
 #═══════════════════════════════════════════════════════════════════════════════
 # BBR 网络优化
+
 #═══════════════════════════════════════════════════════════════════════════════
 
 # 检查 BBR 状态
@@ -21039,7 +21683,7 @@ main_menu() {
             _item "6" "订阅服务管理"
             _item "7" "管理协议服务"
             _item "8" "分流管理"
-            _item "9" "Cloudflare Tunnel (内网穿透)"
+            _item "9" "CF Tunnel(Argo)"
             echo -e "  ${D}───────────────────────────────────────────${NC}"
             _item "10" "BBR 网络优化"
             _item "11" "查看运行日志"

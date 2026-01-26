@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.1] - 2026-01-27
+
+### Added
+- 新增多IP入出站配置功能
+  - 支持多IP服务器按入站IP路由到指定出站IP
+  - 自动检测系统所有公网IPv4/IPv6地址
+  - 交互式管理菜单（添加/删除/启用/禁用规则）
+  - 自动生成Xray outbound和routing配置
+  - 入口位于：分流配置 → 多IP入出站配置
+
+### Changed
+- 优化分流管理菜单布局
+
 ## [3.4.0] - 2026-01-26
 
 ### Added

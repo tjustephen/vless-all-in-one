@@ -13,11 +13,13 @@
 ---
 💬 [Telegram 交流群](https://t.me/vless_vaio)
 
->💡 **服务器推荐**：
+>💡 **服务器推荐**<small>(排名不分先后)</small>：
 
 > <img src="https://www.vipcloud.cc/favicon.ico" height="50"> [VIP Cloud](https://www.vipcloud.cc/aff/QXUUKZSH) - 原生 IP / 解锁流媒体 / 电信 CN2GIA / 移动 CMIN2 / 三网优化
 
 > <img src="https://billing.aethercloud.io/assets/brand/logo-favicon-64.png" height="50"> [Aether Cloud](https://billing.aethercloud.io?ref=Ers87GElwp) -  原生 IP / 解锁流媒体 / IPv6 家宽 / 高性价比
+
+> <img src="https://akile.io/favicon.ico" height="50"> [AkileCloud](https://akile.io/register?aff_code=b349580b-113a-4b42-ab76-c2db81c5c22d) -  多地区覆盖 / 解锁流媒体 / 提供多国 SOCKS5 落地出口 / 包含原生家宽 IP / 高性价比
 
 ## ✨ 支持协议
 

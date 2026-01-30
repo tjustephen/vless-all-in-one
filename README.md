@@ -25,7 +25,7 @@
 
 >🌐 **指纹浏览器推荐** - 配合代理使用效果更佳：
 
-> <img src="https://roxybrowser.com/favicon.ico" height="50"> [RoxyBrowser](https://roxybrowser.com?code=0128SUFA) - 多账号独立环境 / 防关联检测 / 团队协作 / 浏览器指纹隔离 / 代理绑定 / AI多账号管理
+> <img src="https://roxybrowser.com/favicon.ico" height="50"> [RoxyBrowser](https://roxybrowser.com?code=0128SUFA) - 多账号独立环境/ 多端同步 / 防关联检测 / 团队协作 / 浏览器指纹隔离 / 代理绑定 / AI多账号管理
 
 ## ✨ 支持协议
 

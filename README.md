@@ -29,6 +29,9 @@
 
 > <img src="https://roxybrowser.com/favicon.ico" height="50"> [RoxyBrowser](https://roxybrowser.com?code=0128SUFA) - 多账号独立环境/ 多端同步 / 防关联检测 / 团队协作 / 浏览器指纹隔离 / 代理绑定 / AI多账号管理
 
+>📲 **推荐一个自用的 iOS SSH** ：
+
+> <img src="https://nicejwin.github.io/CareServerWebSite/assets/img/logo.png" height="50"> [CareServer](https://apps.apple.com/us/app/careserver/id6474921250) - 服务器实时监控(CPU/内存/磁盘) / 容器管理(Docker/Podman) / 端口转发(本地/远程/动态) / SFTP 文件管理 / 代理功能(SOCKS/HTTP) / 分组管理
 ## ✨ 支持协议
 
 | # | 协议 | 特点 | 推荐场景 | 抗检测评级 | 风险提示 |

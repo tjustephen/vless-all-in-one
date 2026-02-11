@@ -20684,7 +20684,7 @@ gen_surge_sub() {
                 anytls)
                     [[ -n "$server_ip" ]] && proxy="$name = anytls, $server_ip, $port, password=$password, sni=$sni, skip-cert-verify=true"
                     ;;
-                snell|snell-v5)
+                snell|snell-v5|snell-shadowtls|snell-v5-shadowtls)
                     [[ -n "$server_ip" ]] && proxy="$name = snell, $server_ip, $port, psk=$psk, version=${version:-4}"
                     ;;
             esac
